@@ -156,13 +156,20 @@ func openAndSub(templateFile string, p Plugin) (string, error) {
 func (p Plugin) createKubeClient() (*kubernetes.Clientset, error) {
 
 	ca, err := base64.StdEncoding.DecodeString(p.Config.Ca)
+	if err != nil {
+		return nil, err
+	}
 	config := clientcmdapi.NewConfig()
 	config.Clusters["drone"] = &clientcmdapi.Cluster{
 		Server: p.Config.Server,
 		CertificateAuthorityData: ca,
 	}
+	token, err := base64.StdEncoding.DecodeString(p.Config.Token)
+	if err != nil {
+		return nil, err
+	}
 	config.AuthInfos["drone"] = &clientcmdapi.AuthInfo{
-		Token: p.Config.Token,
+		Token: string(token),
 	}
 
 	config.Contexts["drone"] = &clientcmdapi.Context{
