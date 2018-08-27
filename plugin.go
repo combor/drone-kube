@@ -8,7 +8,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -107,11 +106,11 @@ func (p Plugin) Exec() error {
 	}
 	if oldDep.ObjectMeta.Name == dep.ObjectMeta.Name {
 		// update the existing deployment, ignore the deployment that it comes back with
-		_, err = clientset.AppsV1().Deployments(apiv1.NamespaceDefault).Update(&dep)
+		_, err = clientset.AppsV1().Deployments(dep.ObjectMeta.Namespace).Update(&dep)
 		return err
 	}
 	// create the new deployment since this never existed.
-	_, err = clientset.AppsV1().Deployments(apiv1.NamespaceDefault).Create(&dep)
+	_, err = clientset.AppsV1().Deployments(dep.ObjectMeta.Namespace).Create(&dep)
 
 	return err
 }
@@ -135,7 +134,7 @@ func findDeployment(depName string, namespace string, c *kubernetes.Clientset) (
 
 // List the deployments
 func listDeployments(clientset *kubernetes.Clientset, namespace string) ([]appsv1.Deployment, error) {
-	deployments, err := clientset.AppsV1().Deployments(apiv1.NamespaceDefault).List(metav1.ListOptions{})
+	deployments, err := clientset.AppsV1().Deployments(namespace).List(metav1.ListOptions{})
 	if err != nil {
 		log.Fatal(err.Error())
 	}
