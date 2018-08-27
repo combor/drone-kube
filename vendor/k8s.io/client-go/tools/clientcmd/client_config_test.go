@@ -24,24 +24,87 @@ import (
 	"testing"
 
 	"github.com/imdario/mergo"
+	restclient "k8s.io/client-go/rest"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-func TestOldMergoLib(t *testing.T) {
-	type T struct {
-		X string
+func TestMergoSemantics(t *testing.T) {
+	type U struct {
+		A string
+		B int64
 	}
-	dst := T{X: "one"}
-	src := T{X: "two"}
-	mergo.Merge(&dst, &src)
-	if dst.X != "two" {
-		// mergo.Merge changed in an incompatible way with
-		//
-		//   https://github.com/imdario/mergo/commit/d304790b2ed594794496464fadd89d2bb266600a
-		//
-		// We have to stay with the old version which still does eager
-		// copying from src to dst in structs.
-		t.Errorf("mergo.Merge library found with incompatible, new behavior")
+	type T struct {
+		S []string
+		X string
+		Y int64
+		U U
+	}
+	var testDataStruct = []struct {
+		dst      T
+		src      T
+		expected T
+	}{
+		{
+			dst:      T{X: "one"},
+			src:      T{X: "two"},
+			expected: T{X: "two"},
+		},
+		{
+			dst:      T{X: "one", Y: 5, U: U{A: "four", B: 6}},
+			src:      T{X: "two", U: U{A: "three", B: 4}},
+			expected: T{X: "two", Y: 5, U: U{A: "three", B: 4}},
+		},
+		{
+			dst:      T{S: []string{"test3", "test4", "test5"}},
+			src:      T{S: []string{"test1", "test2", "test3"}},
+			expected: T{S: []string{"test1", "test2", "test3"}},
+		},
+	}
+	for _, data := range testDataStruct {
+		err := mergo.MergeWithOverwrite(&data.dst, &data.src)
+		if err != nil {
+			t.Errorf("error while merging: %s", err)
+		}
+		if !reflect.DeepEqual(data.dst, data.expected) {
+			// The mergo library has previously changed in a an incompatible way.
+			// example:
+			//
+			//   https://github.com/imdario/mergo/commit/d304790b2ed594794496464fadd89d2bb266600a
+			//
+			// This test verifies that the semantics of the merge are what we expect.
+			// If they are not, the mergo library may have been updated and broken
+			// unexpectedly.
+			t.Errorf("mergo.MergeWithOverwrite did not provide expected output: %+v doesn't match %+v", data.dst, data.expected)
+		}
+	}
+
+	var testDataMap = []struct {
+		dst      map[string]int
+		src      map[string]int
+		expected map[string]int
+	}{
+		{
+			dst:      map[string]int{"rsc": 6543, "r": 2138, "gri": 1908, "adg": 912, "prt": 22},
+			src:      map[string]int{"rsc": 3711, "r": 2138, "gri": 1908, "adg": 912},
+			expected: map[string]int{"rsc": 3711, "r": 2138, "gri": 1908, "adg": 912, "prt": 22},
+		},
+	}
+	for _, data := range testDataMap {
+		err := mergo.MergeWithOverwrite(&data.dst, &data.src)
+		if err != nil {
+			t.Errorf("error while merging: %s", err)
+		}
+		if !reflect.DeepEqual(data.dst, data.expected) {
+			// The mergo library has previously changed in a an incompatible way.
+			// example:
+			//
+			//   https://github.com/imdario/mergo/commit/d304790b2ed594794496464fadd89d2bb266600a
+			//
+			// This test verifies that the semantics of the merge are what we expect.
+			// If they are not, the mergo library may have been updated and broken
+			// unexpectedly.
+			t.Errorf("mergo.MergeWithOverwrite did not provide expected output: %+v doesn't match %+v", data.dst, data.expected)
+		}
 	}
 }
 
@@ -93,7 +156,7 @@ func TestInsecureOverridesCA(t *testing.T) {
 }
 
 func TestMergeContext(t *testing.T) {
-	const namespace = "overriden-namespace"
+	const namespace = "overridden-namespace"
 
 	config := createValidTestConfig()
 	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
@@ -123,6 +186,54 @@ func TestMergeContext(t *testing.T) {
 	}
 
 	matchStringArg(namespace, actual, t)
+}
+
+func TestModifyContext(t *testing.T) {
+	expectedCtx := map[string]bool{
+		"updated": true,
+		"clean":   true,
+	}
+
+	tempPath, err := ioutil.TempFile("", "testclientcmd-")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer os.Remove(tempPath.Name())
+
+	pathOptions := NewDefaultPathOptions()
+	config := createValidTestConfig()
+
+	pathOptions.GlobalFile = tempPath.Name()
+
+	// define new context and assign it - our path options config
+	config.Contexts["updated"] = &clientcmdapi.Context{
+		Cluster:  "updated",
+		AuthInfo: "updated",
+	}
+	config.CurrentContext = "updated"
+
+	if err := ModifyConfig(pathOptions, *config, true); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	startingConfig, err := pathOptions.GetStartingConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// make sure the current context was updated
+	matchStringArg("updated", startingConfig.CurrentContext, t)
+
+	// there should now be two contexts
+	if len(startingConfig.Contexts) != len(expectedCtx) {
+		t.Fatalf("unexpected nuber of contexts, expecting %v, but found %v", len(expectedCtx), len(startingConfig.Contexts))
+	}
+
+	for key := range startingConfig.Contexts {
+		if !expectedCtx[key] {
+			t.Fatalf("expected context %q to exist", key)
+		}
+	}
 }
 
 func TestCertificateData(t *testing.T) {
@@ -372,6 +483,120 @@ func TestCreateMissingContext(t *testing.T) {
 	}
 }
 
+func TestInClusterClientConfigPrecedence(t *testing.T) {
+	tt := []struct {
+		overrides *ConfigOverrides
+	}{
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server: "https://host-from-overrides.com",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server:               "https://host-from-overrides.com",
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server:               "https://host-from-overrides.com",
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{},
+		},
+	}
+
+	for _, tc := range tt {
+		expectedServer := "https://host-from-cluster.com"
+		expectedToken := "token-from-cluster"
+		expectedCAFile := "/path/to/ca-from-cluster.crt"
+
+		icc := &inClusterClientConfig{
+			inClusterConfigProvider: func() (*restclient.Config, error) {
+				return &restclient.Config{
+					Host:        expectedServer,
+					BearerToken: expectedToken,
+					TLSClientConfig: restclient.TLSClientConfig{
+						CAFile: expectedCAFile,
+					},
+				}, nil
+			},
+			overrides: tc.overrides,
+		}
+
+		clientConfig, err := icc.ClientConfig()
+		if err != nil {
+			t.Fatalf("Unxpected error: %v", err)
+		}
+
+		if overridenServer := tc.overrides.ClusterInfo.Server; len(overridenServer) > 0 {
+			expectedServer = overridenServer
+		}
+		if overridenToken := tc.overrides.AuthInfo.Token; len(overridenToken) > 0 {
+			expectedToken = overridenToken
+		}
+		if overridenCAFile := tc.overrides.ClusterInfo.CertificateAuthority; len(overridenCAFile) > 0 {
+			expectedCAFile = overridenCAFile
+		}
+
+		if clientConfig.Host != expectedServer {
+			t.Errorf("Expected server %v, got %v", expectedServer, clientConfig.Host)
+		}
+		if clientConfig.BearerToken != expectedToken {
+			t.Errorf("Expected token %v, got %v", expectedToken, clientConfig.BearerToken)
+		}
+		if clientConfig.TLSClientConfig.CAFile != expectedCAFile {
+			t.Errorf("Expected Certificate Authority %v, got %v", expectedCAFile, clientConfig.TLSClientConfig.CAFile)
+		}
+	}
+}
+
 func matchBoolArg(expected, got bool, t *testing.T) {
 	if expected != got {
 		t.Errorf("Expected %v, got %v", expected, got)
@@ -388,4 +613,69 @@ func matchByteArg(expected, got []byte, t *testing.T) {
 	if !reflect.DeepEqual(expected, got) {
 		t.Errorf("Expected %v, got %v", expected, got)
 	}
+}
+
+func TestNamespaceOverride(t *testing.T) {
+	config := &DirectClientConfig{
+		overrides: &ConfigOverrides{
+			Context: clientcmdapi.Context{
+				Namespace: "foo",
+			},
+		},
+	}
+
+	ns, overridden, err := config.Namespace()
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	if !overridden {
+		t.Errorf("Expected overridden = true")
+	}
+
+	matchStringArg("foo", ns, t)
+}
+
+func TestAuthConfigMerge(t *testing.T) {
+	content := `
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://localhost:8080
+  name: foo-cluster
+contexts:
+- context:
+    cluster: foo-cluster
+    user: foo-user
+    namespace: bar
+  name: foo-context
+current-context: foo-context
+kind: Config
+users:
+- name: foo-user
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1alpha1
+      args:
+      - arg-1
+      - arg-2
+      command: foo-command
+`
+	tmpfile, err := ioutil.TempFile("", "kubeconfig")
+	if err != nil {
+		t.Error(err)
+	}
+	defer os.Remove(tmpfile.Name())
+	if err := ioutil.WriteFile(tmpfile.Name(), []byte(content), 0666); err != nil {
+		t.Error(err)
+	}
+	config, err := BuildConfigFromFlags("", tmpfile.Name())
+	if err != nil {
+		t.Error(err)
+	}
+	if !reflect.DeepEqual(config.ExecProvider.Args, []string{"arg-1", "arg-2"}) {
+		t.Errorf("Got args %v when they should be %v\n", config.ExecProvider.Args, []string{"arg-1", "arg-2"})
+	}
+
 }
