@@ -107,12 +107,19 @@ func (p Plugin) Exec() error {
 	if oldDep.ObjectMeta.Name == dep.ObjectMeta.Name {
 		// update the existing deployment, ignore the deployment that it comes back with
 		_, err = clientset.AppsV1().Deployments(dep.ObjectMeta.Namespace).Update(&dep)
-		return err
+		if err != nil {
+			return err
+		}
+		log.Printf("Updated deployment %s", oldDep.ObjectMeta.Name)
+		return nil
 	}
 	// create the new deployment since this never existed.
 	_, err = clientset.AppsV1().Deployments(dep.ObjectMeta.Namespace).Create(&dep)
-
-	return err
+	if err != nil {
+		return err
+	}
+	log.Printf("Updated deployment %s", dep.ObjectMeta.Name)
+	return nil
 }
 
 func findDeployment(depName string, namespace string, c *kubernetes.Clientset) (appsv1.Deployment, error) {
